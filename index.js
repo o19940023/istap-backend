@@ -22,12 +22,34 @@ const fcm = admin.messaging();
 
 console.log("İşTap Backend çalışır və Firebase-i izləyir...");
 
+// Helper: FCM bildirişi göndər
+async function sendPush(userId, title, body) {
+  try {
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      console.log(`User ${userId} tapılmadı.`);
+      return;
+    }
+    const fcmToken = userDoc.data().fcmToken;
+    if (!fcmToken) {
+      console.log(`${userId} üçün FCM Token yoxdur.`);
+      return;
+    }
+    await fcm.send({
+      notification: { title, body },
+      token: fcmToken
+    });
+    console.log(`PUSH => ${userId}: ${title}`);
+  } catch (e) {
+    console.error(`Push xətası (${userId}):`, e.message);
+  }
+}
+
 // ===== 1. YENİ MESAJ BİLDİRİŞLƏRİ =====
-// Mövcud çatları izləyirik, yeni çat yarananda onun da mesajlarını dinləməyə başlayırıq.
-const messageListeners = new Set(); // Already-listening chat IDs
+const messageListeners = new Set();
 
 function listenToChatMessages(chatId) {
-  if (messageListeners.has(chatId)) return; // Already listening
+  if (messageListeners.has(chatId)) return;
   messageListeners.add(chatId);
 
   db.collection('chats').doc(chatId).collection('messages')
@@ -40,57 +62,26 @@ function listenToChatMessages(chatId) {
           const senderId = messageData.senderId;
           const text = messageData.text;
 
-          // Mesaj göndərildikdən sonrakı 10 saniyə daxilində olmasa, köhnədir, skip
+          // 30 saniyədən köhnə mesajları skip et
           const messageTime = messageData.createdAt?.toDate ? messageData.createdAt.toDate() : new Date(messageData.createdAt);
           const now = new Date();
-          const diffSeconds = (now - messageTime) / 1000;
-          if (diffSeconds > 30) return; // 30 saniyədən köhnə mesajları skip
+          if ((now - messageTime) / 1000 > 30) return;
 
-          // Çat məlumatını çəkərək qarşı tərəfi tapırıq
           const chatDoc = await db.collection('chats').doc(chatId).get();
           if (!chatDoc.exists) return;
 
           const chatData = chatDoc.data();
           const participants = chatData.participantIds || [];
-
-          // Mesajı göndərən adamdan başqa olan iştirakçı = Alıcı (Recipient)
           const recipientId = participants.find(id => id !== senderId);
           if (!recipientId) return;
 
-          // Görünəcək adı təyin edirik
           const senderName = senderId === chatData.employerId ? chatData.employerName : chatData.jobSeekerName;
-
-          // Alıcının FCM Tokenini `users` cədvəlindən alırıq
-          const recipientDoc = await db.collection('users').doc(recipientId).get();
-          if (!recipientDoc.exists) return;
-
-          const fcmToken = recipientDoc.data().fcmToken;
-          if (!fcmToken) {
-            console.log(`${recipientId} üçün FCM Token tapılmadı.`);
-            return;
-          }
-
-          // Bildiriş Göndərmək
-          const payload = {
-            notification: {
-              title: `${senderName}`,
-              body: text,
-            },
-            token: fcmToken
-          };
-
-          try {
-            await fcm.send(payload);
-            console.log(`MESAJ PUSH => ${recipientId}`);
-          } catch (error) {
-            console.error("MESAJ BİLDİRİŞ XƏTASI:", error.message);
-          }
+          await sendPush(recipientId, `${senderName}`, text);
         }
       });
-    }, err => console.error(`Chat ${chatId} mesaj dinləmə xətası:`, err.message));
+    }, err => console.error(`Chat ${chatId} xətası:`, err.message));
 }
 
-// Bütün mövcud və yeni çatları izlə
 db.collection('chats').onSnapshot((snapshot) => {
   snapshot.docChanges().forEach((change) => {
     if (change.type === 'added' || change.type === 'modified') {
@@ -98,41 +89,79 @@ db.collection('chats').onSnapshot((snapshot) => {
     }
   });
   console.log(`${messageListeners.size} çat dinlənilir.`);
-}, err => console.error("Çat siyahısı dinləmə xətası:", err.message));
+}, err => console.error("Çat siyahısı xətası:", err.message));
 
 
-// ===== 2. MÜRACİƏT (BAŞVURU) STATUS BİLDİRİŞLƏRİ =====
+// ===== 2. MÜRACİƏT BİLDİRİŞLƏRİ =====
+let isFirstApplicationSnapshot = true;
+
 db.collection('applications')
   .onSnapshot((snapshot) => {
+    // İlk snapshot-da bütün mövcud sənədlər 'added' olaraq gəlir — onları skip edirik
+    if (isFirstApplicationSnapshot) {
+      isFirstApplicationSnapshot = false;
+      console.log(`${snapshot.docs.length} mövcud müraciət yükləndi (skip).`);
+      return;
+    }
+
     snapshot.docChanges().forEach(async (change) => {
+      const appData = change.doc.data();
+
+      // ---- YENİ MÜRACİƏT: İşəgötürənə bildiriş ----
+      if (change.type === 'added') {
+        const employerId = appData.employerId;
+        if (!employerId) return;
+
+        // İş axtaranın adını öyrən
+        let applicantName = 'Bir namizəd';
+        try {
+          const applicantDoc = await db.collection('users').doc(appData.applicantId).get();
+          if (applicantDoc.exists) {
+            const userData = applicantDoc.data();
+            applicantName = userData.fullName || userData.name || userData.email || 'Bir namizəd';
+          }
+        } catch (e) { /* ignore */ }
+
+        // İş elanının adını öyrən
+        let jobTitle = 'iş elanınıza';
+        try {
+          const jobDoc = await db.collection('jobs').doc(appData.jobId).get();
+          if (jobDoc.exists) {
+            jobTitle = jobDoc.data().title || 'iş elanınıza';
+          }
+        } catch (e) { /* ignore */ }
+
+        await sendPush(employerId, 'Yeni Müraciət!', `${applicantName} "${jobTitle}" elanınıza müraciət etdi.`);
+      }
+
+      // ---- STATUS DƏYİŞİKLİYİ: İş axtarana bildiriş ----
       if (change.type === 'modified') {
-        const appData = change.doc.data();
+        const status = appData.status;
 
-        if ((appData.status === 'accepted' || appData.status === 'rejected') && !appData.statusNotificationSent) {
-
+        if ((status === 'accepted' || status === 'rejected') && !appData.statusNotificationSent) {
           const applicantId = appData.applicantId;
-          const userDoc = await db.collection('users').doc(applicantId).get();
-          if (!userDoc.exists) return;
 
-          const fcmToken = userDoc.data().fcmToken;
-          if (!fcmToken) return;
-
-          const title = appData.status === 'accepted' ? 'Təbriklər!' : 'Müraciət Nəticəsi';
-          const body = appData.status === 'accepted' ? 'Müraciətiniz qəbul olundu!' : 'Təəssüf ki, müraciətiniz rədd edildi.';
-
-          const payload = {
-            notification: { title, body },
-            token: fcmToken
-          };
-
+          // İş elanının adını öyrən
+          let jobTitle = 'müraciətiniz';
           try {
-            await fcm.send(payload);
-            console.log(`STATUS PUSH => ${applicantId} (${appData.status})`);
+            const jobDoc = await db.collection('jobs').doc(appData.jobId).get();
+            if (jobDoc.exists) {
+              jobTitle = jobDoc.data().title || 'müraciətiniz';
+            }
+          } catch (e) { /* ignore */ }
 
-            // Eyni status üçün təkrar bildiriş atılmasının qarşısını alırıq
+          const title = status === 'accepted' ? 'Təbriklər! 🎉' : 'Müraciət Nəticəsi';
+          const body = status === 'accepted'
+            ? `"${jobTitle}" üçün müraciətiniz qəbul olundu!`
+            : `"${jobTitle}" üçün müraciətiniz rədd edildi.`;
+
+          await sendPush(applicantId, title, body);
+
+          // Təkrar bildirişin qarşısını al
+          try {
             await change.doc.ref.update({ statusNotificationSent: true });
           } catch (e) {
-            console.error("STATUS BİLDİRİŞ XƏTASI:", e.message);
+            console.error("statusNotificationSent update xətası:", e.message);
           }
         }
       }
@@ -140,7 +169,7 @@ db.collection('applications')
   }, err => console.error("Application dinləmə xətası:", err.message));
 
 
-// Render.com "Web Service" üçün minimal HTTP server (sağlamlıq yoxlaması)
+// Render.com "Web Service" üçün minimal HTTP server
 const http = require('http');
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
