@@ -209,7 +209,8 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       return res.status(400).json({ error: "invalid_params" });
     }
 
-    const amount = d === 1 ? 1 : d === 5 ? 3 : 5;
+    // Test üçün 1 günlük qiyməti 0.01 AZN edirik
+    const amount = d === 1 ? 0.01 : d === 5 ? 3 : 5;
     const orderId = `urgent_${jobId}_${Date.now()}`;
     // Epoint API "other_attr" sahəsini bəzən düzgün qəbul etmir və ya JSON gözləyir
     // Ona görə də onu ləğv edirik, onsuz da orderId-nin içində jobId var.
