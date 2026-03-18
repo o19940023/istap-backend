@@ -244,23 +244,32 @@ app.post('/api/createUrgentPayment', async (req, res) => {
 });
 
 app.post('/api/urgentPaymentCallback', async (req, res) => {
+  console.log("====== EPOINT WEBHOOK RECEIVED ======");
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
+      console.error("Epoint keys missing in env");
       return res.status(500).send("Epoint keys missing");
     }
     
+    // Express req.body adətən URL-encoded form data olanda obyekt qaytarır
     const dataBase64 = req.body.data || req.query.data || "";
     const signature = req.body.signature || req.query.signature || "";
+    
     if (!dataBase64 || !signature) {
+      console.error("Webhook data missing. Body:", req.body, "Query:", req.query);
       return res.status(400).send("invalid");
     }
 
     const expectedSig = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
     if (expectedSig !== signature) {
+      console.error(`Signature mismatch. Expected: ${expectedSig}, Got: ${signature}`);
       return res.status(403).send("forbidden");
     }
 
-    const decoded = JSON.parse(Buffer.from(dataBase64, "base64").toString("utf8"));
+    const decodedStr = Buffer.from(dataBase64, "base64").toString("utf8");
+    console.log("Decoded Epoint payload:", decodedStr);
+    
+    const decoded = JSON.parse(decodedStr);
     const status = decoded.status || "";
     // otherAttr istifadə etmədiyimiz üçün order_id-dən məlumatları çıxarırıq
     const orderId = decoded.order_id || "";
@@ -271,26 +280,35 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
       const parts = orderId.split("_");
       if (parts.length >= 3) {
         jobId = parts[1]; // urgent_JOBID_TIMESTAMP
-        // Gün sayını description və ya məbləğdən tapa bilərik. 
-        // Lakin sadəlik üçün məbləğə əsasən təyin edək:
-        const amount = decoded.amount || 1;
-        if (amount === 1) days = 1;
+        // Gün sayını məbləğdən tapırıq
+        const amount = Number(decoded.amount) || 1;
+        if (amount === 0.01 || amount === 1) days = 1;
         else if (amount === 3) days = 5;
         else if (amount === 5) days = 10;
       }
     }
 
+    console.log(`Parsed info -> jobId: ${jobId}, status: ${status}, days: ${days}, amount: ${decoded.amount}`);
+
     if (status === "success" && jobId && [1, 5, 10].includes(days)) {
       const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      
+      console.log(`Updating Firestore for jobId: ${jobId}...`);
+      
+      // Update the document
       await db.collection("jobs").doc(jobId).update({
         isUrgent: true,
         urgentUntil: until,
         urgentTransaction: decoded.transaction || "",
-      }).catch(err => console.error("Firestore update error:", err));
+      });
+      
+      console.log(`✅ Job ${jobId} made urgent successfully.`);
+    } else {
+      console.log(`⚠️ Webhook conditions not met: status=${status}, jobId=${jobId}, days=${days}`);
     }
     res.status(200).send("ok");
   } catch (e) {
-    console.error("Callback error:", e);
+    console.error("❌ Callback error:", e);
     res.status(500).send("error");
   }
 });
