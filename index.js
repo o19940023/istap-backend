@@ -210,7 +210,7 @@ app.post('/api/createUrgentPayment', async (req, res) => {
     }
 
     // Test üçün 1 günlük qiyməti 0.01 AZN edirik
-    const amount = d === 1 ? 0.01 : d === 5 ? 3 : 5;
+    const amount = d === 1 ? 1 : d === 5 ? 3 : 5;
     const orderId = `urgent_${jobId}_${Date.now()}`;
     // Epoint API "other_attr" sahəsini bəzən düzgün qəbul etmir və ya JSON gözləyir
     // Ona görə də onu ləğv edirik, onsuz da orderId-nin içində jobId var.
@@ -282,7 +282,7 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
         jobId = parts[1]; // urgent_JOBID_TIMESTAMP
         // Gün sayını məbləğdən tapırıq
         const amount = Number(decoded.amount) || 1;
-        if (amount === 0.01 || amount === 1) days = 1;
+        if (amount === 1) days = 1;
         else if (amount === 3) days = 5;
         else if (amount === 5) days = 10;
       }
