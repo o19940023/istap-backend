@@ -224,8 +224,8 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       language: "az",
       order_id: orderId,
       description: `Təcili elan ${d} gün`,
-      success_redirect_url: "https://istapapp.netlify.app/support.html",
-      error_redirect_url: "https://istapapp.netlify.app/support.html",
+      success_redirect_url: "https://istapapp.netlify.app/payment-success.html",
+      error_redirect_url: "https://istapapp.netlify.app/payment-error.html",
       other_attr: otherAttr,
     };
     const dataBase64 = toBase64Json(dataPayload);
