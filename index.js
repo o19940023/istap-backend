@@ -291,9 +291,20 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
     console.log(`Parsed info -> jobId: ${jobId}, status: ${status}, days: ${days}, amount: ${decoded.amount}`);
 
     if (status === "success" && jobId && [1, 5, 10].includes(days)) {
-      const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-      
       console.log(`Updating Firestore for jobId: ${jobId}...`);
+      
+      // Önce kontrol et: Zaten güncellenmiş mi? (Idempotency)
+      const jobDoc = await db.collection("jobs").doc(jobId).get();
+      if (jobDoc.exists) {
+        const jobData = jobDoc.data();
+        if (jobData.isUrgent === true && jobData.urgentTransaction) {
+          console.log(`✅ Job ${jobId} already marked as urgent, skipping update (idempotency)`);
+          return res.status(200).send("ok");
+        }
+      }
+      
+      // Henüz güncellenmemişse, şimdi güncelle
+      const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
       
       // Update the document
       await db.collection("jobs").doc(jobId).update({
@@ -314,12 +325,16 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
 });
 
 app.post('/api/checkPaymentStatus', async (req, res) => {
+  console.log("====== CHECK PAYMENT STATUS REQUEST ======");
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
+      console.error("Epoint keys missing");
       return res.status(500).json({ error: "Epoint keys missing" });
     }
 
     const { orderId, transaction } = req.body;
+    console.log(`Checking status for OrderID: ${orderId}, Transaction: ${transaction}`);
+
     if (!orderId && !transaction) {
       return res.status(400).json({ error: "missing_params" });
     }
@@ -339,8 +354,53 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
     });
 
     const json = await resp.json().catch(() => ({}));
+    console.log("Epoint Status Response:", JSON.stringify(json));
+
+    // Əgər status "success"dirsə, dərhal elanı yeniləyirik (Webhook-u gözləmədən)
+    if (json.status === "success") {
+      let jobId = "";
+      let days = 0;
+      
+      // Order ID-dən jobId-ni çıxarırıq
+      const oid = json.order_id || orderId || "";
+      if (oid.startsWith("urgent_")) {
+        const parts = oid.split("_");
+        if (parts.length >= 3) {
+          jobId = parts[1];
+          const amount = Number(json.amount) || 1;
+          if (amount === 0.01 || amount === 1) days = 1;
+          else if (amount === 3) days = 5;
+          else if (amount === 5) days = 10;
+        }
+      }
+
+      if (jobId && [1, 5, 10].includes(days)) {
+        console.log(`Force updating Firestore for jobId: ${jobId}...`);
+        
+        // Önce kontrol et: Zaten güncellenmiş mi? (Idempotency)
+        const jobDoc = await db.collection("jobs").doc(jobId).get();
+        if (jobDoc.exists) {
+          const jobData = jobDoc.data();
+          if (jobData.isUrgent === true && jobData.urgentTransaction) {
+            console.log(`✅ Job ${jobId} already marked as urgent, skipping update (idempotency)`);
+            return res.json(json);
+          }
+        }
+        
+        // Henüz güncellenmemişse, şimdi güncelle
+        const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+        await db.collection("jobs").doc(jobId).update({
+          isUrgent: true,
+          urgentUntil: until,
+          urgentTransaction: json.transaction || transaction || "",
+        });
+        console.log(`✅ Job ${jobId} force updated successfully.`);
+      }
+    }
+
     res.json(json);
   } catch (e) {
+    console.error("Check status error:", e);
     res.status(500).json({ error: String(e) });
   }
 });
