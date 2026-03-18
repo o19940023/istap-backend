@@ -1,0 +1,3 @@
+0000000000000000000000000000000000000000 a6806e84b994ae22593770c4580a011c8f29fd26 o19940023 <o19940023@users.noreply.github.com> 1772389984 +0300	commit (initial): Push notification backend
+a6806e84b994ae22593770c4580a011c8f29fd26 a6806e84b994ae22593770c4580a011c8f29fd26 o19940023 <o19940023@users.noreply.github.com> 1772389984 +0300	Branch: renamed refs/heads/master to refs/heads/main
+a6806e84b994ae22593770c4580a011c8f29fd26 9de31a669e854f3dbe126382b5f629779a4bd11f o19940023 <o19940023@users.noreply.github.com> 1772391143 +0300	commit: Fix: add new-application and status-change notifications
