@@ -249,7 +249,12 @@ app.post('/api/createUrgentPayment', async (req, res) => {
     if (!json || !json.redirect_url) {
       return res.status(502).json({ error: "epoint_error", response: json });
     }
-    res.json({ redirect_url: json.redirect_url, transaction: json.transaction, status: json.status || "success" });
+    res.json({
+      redirect_url: json.redirect_url,
+      transaction: json.transaction,
+      order_id: orderId,
+      status: json.status || "success"
+    });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
