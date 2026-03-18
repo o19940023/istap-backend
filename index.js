@@ -1,21 +1,41 @@
 require('dotenv').config();
 const admin = require('firebase-admin');
 const fs = require('fs');
+const express = require('express');
+const cors = require('cors');
 
-// Service Account: env variable (Render.com) OR local file
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// --- SERVER STARTUP ---
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Express server port ${PORT}-da çalışır.`);
+});
+
+// --- FIREBASE INITIALIZATION ---
 let serviceAccount;
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-} else if (fs.existsSync('./serviceAccountKey.json')) {
-  serviceAccount = require('./serviceAccountKey.json');
-} else {
-  console.error("XƏTA: FIREBASE_SERVICE_ACCOUNT env variable və ya serviceAccountKey.json tapılmadı!");
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    console.log("Firebase credentials env variable-dan oxundu.");
+  } else if (fs.existsSync('./serviceAccountKey.json')) {
+    serviceAccount = require('./serviceAccountKey.json');
+    console.log("Firebase credentials local fayldan oxundu.");
+  } else {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT env variable və ya serviceAccountKey.json tapılmadı!");
+  }
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+  console.log("Firebase Admin uğurla başladıldı.");
+} catch (e) {
+  console.error("❌ FIREBASE STARTUP ERROR:", e.message);
   process.exit(1);
 }
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
 
 const db = admin.firestore();
 const fcm = admin.messaging();
@@ -170,15 +190,7 @@ db.collection('applications')
 
 
 // ===== EXPRESS SERVER FOR EPOINT PAYMENT API =====
-const express = require('express');
-const cors = require('cors');
 const crypto = require('crypto');
-
-const app = express();
-app.use(cors());
-// Parse JSON and URL-encoded bodies
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req, res) => {
   res.send(`IsTap Backend OK - ${messageListeners.size} chats dinlənilir`);
@@ -209,8 +221,8 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       return res.status(400).json({ error: "invalid_params" });
     }
 
-    // Test üçün 1 günlük qiyməti 0.01 AZN edirik
-    const amount = d === 1 ? 0.01 : d === 5 ? 3 : 5;
+    // Gerçek fiyatlar
+    const amount = d === 1 ? 1 : d === 5 ? 4 : 7;
     const orderId = `urgent_${jobId}_${Date.now()}`;
     // Epoint API "other_attr" sahəsini bəzən düzgün qəbul etmir və ya JSON gözləyir
     // Ona görə də onu ləğv edirik, onsuz da orderId-nin içində jobId var.
@@ -283,8 +295,8 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
         // Gün sayını məbləğdən tapırıq
         const amount = Number(decoded.amount) || 1;
         if (amount === 1) days = 1;
-        else if (amount === 3) days = 5;
-        else if (amount === 5) days = 10;
+        else if (amount === 4) days = 5;
+        else if (amount === 7) days = 10;
       }
     }
 
@@ -368,9 +380,9 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
         if (parts.length >= 3) {
           jobId = parts[1];
           const amount = Number(json.amount) || 1;
-          if (amount === 0.01 || amount === 1) days = 1;
-          else if (amount === 3) days = 5;
-          else if (amount === 5) days = 10;
+          if (amount === 1) days = 1;
+          else if (amount === 4) days = 5;
+          else if (amount === 7) days = 10;
         }
       }
 
@@ -405,7 +417,4 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Express server port ${PORT}-da çalışır.`);
-});
+
