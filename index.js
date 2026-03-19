@@ -234,6 +234,7 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       description: `Tecili elan ${d} gun`,
       success_redirect_url: "https://istapapp.netlify.app/payment-success.html",
       error_redirect_url: "https://istapapp.netlify.app/payment-error.html",
+      callback_url: "https://istap-backend-1.onrender.com/api/urgentPaymentCallback",
     };
     
     console.log("📤 Epoint payload:", JSON.stringify(dataPayload, null, 2));
