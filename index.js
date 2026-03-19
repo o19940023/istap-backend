@@ -240,8 +240,8 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       language: "az",
       order_id: orderId,
       description: `Tecili elan ${d} gun`,
-      success_redirect_url: "https://istapapp.netlify.app/payment-success.html",
-      error_redirect_url: "https://istapapp.netlify.app/payment-error.html",
+      success_redirect_url: "https://istapapp.netlify.app/support.html",
+      error_redirect_url: "https://istapapp.netlify.app/support.html",
     };
     
     console.log("📤 Sending to Epoint:", JSON.stringify(dataPayload, null, 2));
