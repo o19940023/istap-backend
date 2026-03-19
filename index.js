@@ -234,7 +234,7 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       description: `Tecili elan ${d} gun`,
       success_redirect_url: "https://istapapp.netlify.app/payment-success.html",
       error_redirect_url: "https://istapapp.netlify.app/payment-error.html",
-      callback_url: "https://istap-backend-1.onrender.com/api/urgentPaymentCallback",
+      // callback_url buradan silindi - ayrıca parametr kimi göndərilir
     };
     
     console.log("📤 Epoint payload:", JSON.stringify(dataPayload, null, 2));
@@ -243,7 +243,12 @@ app.post('/api/createUrgentPayment', async (req, res) => {
     const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
     console.log(`🔐 Signature: ${signature.substring(0, 20)}...`);
 
-    const body = new URLSearchParams({ data: dataBase64, signature }).toString();
+    // callback_url ayrıca parametr kimi göndər (base64 payload-dan kənar)
+    const body = new URLSearchParams({ 
+      data: dataBase64, 
+      signature,
+      callback_url: "https://istap-backend-1.onrender.com/api/urgentPaymentCallback"
+    }).toString();
     console.log("🌐 Calling Epoint API...");
     
     const resp = await fetch("https://epoint.az/api/1/request", {
@@ -397,7 +402,67 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
   }
 });
 
+app.post('/api/manualConfirm', async (req, res) => {
+  console.log("====== MANUAL CONFIRM REQUEST ======");
+  try {
+    const { transaction, jobId, days } = req.body;
+    console.log(`📥 Manual confirm: transaction=${transaction}, jobId=${jobId}, days=${days}`);
+    
+    if (!transaction || !jobId || !days) {
+      return res.status(400).json({ error: "missing_params" });
+    }
+
+    // Epoint-dən status yoxla
+    const dataPayload = { 
+      public_key: EPOINT_PUBLIC_KEY,
+      transaction 
+    };
+    const dataBase64 = toBase64Json(dataPayload);
+    const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
+    const body = new URLSearchParams({ data: dataBase64, signature }).toString();
+    
+    const resp = await fetch("https://epoint.az/api/1/get-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+
+    const statusData = await resp.json().catch(() => ({}));
+    console.log(`📥 Epoint status response:`, JSON.stringify(statusData, null, 2));
+    
+    if (statusData.status === 'success') {
+      console.log(`✅ Payment confirmed, updating Firestore for jobId=${jobId}`);
+      const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      
+      await db.collection("jobs").doc(jobId).update({
+        isUrgent: true,
+        urgentUntil: until,
+        urgentTransaction: transaction,
+      });
+      
+      console.log(`✅ Job ${jobId} marked as urgent until ${until}`);
+      res.json({ ok: true, status: 'success' });
+    } else {
+      console.log(`⚠️ Payment not successful, status: ${statusData.status}`);
+      res.json({ ok: false, status: statusData.status });
+    }
+  } catch (e) {
+    console.error("❌ Manual confirm error:", e);
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Express server port ${PORT}-da çalışır.`);
 });
+
+// Keep-alive: Render-i yuxudan qorumaq üçün hər 14 dəqiqədə özünə ping at
+setInterval(async () => {
+  try {
+    const response = await fetch('https://istap-backend-1.onrender.com/ping');
+    console.log('⏰ Keep-alive ping sent, status:', response.status);
+  } catch (e) {
+    console.error('⏰ Keep-alive ping failed:', e.message);
+  }
+}, 14 * 60 * 1000); // 14 dəqiqə
