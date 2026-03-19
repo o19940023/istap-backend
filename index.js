@@ -184,6 +184,10 @@ app.get('/', (req, res) => {
   res.send(`IsTap Backend OK - ${messageListeners.size} chats dinlənilir`);
 });
 
+app.get('/ping', (req, res) => {
+  res.send('pong');
+});
+
 // Epoint keys from Environment Variables
 const EPOINT_PUBLIC_KEY = process.env.EPOINT_PUBLIC_KEY || "";
 const EPOINT_PRIVATE_KEY = process.env.EPOINT_PRIVATE_KEY || "";
@@ -271,6 +275,9 @@ app.get('/api/urgentPaymentCallback', (req, res) => {
 
 app.post('/api/urgentPaymentCallback', async (req, res) => {
   console.log("====== EPOINT WEBHOOK RECEIVED ======");
+  console.log("📥 Full request body:", JSON.stringify(req.body, null, 2));
+  console.log("📥 Full request query:", JSON.stringify(req.query, null, 2));
+  
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
       console.error("❌ Epoint keys missing");
@@ -288,6 +295,8 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
     const expectedSig = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
     if (expectedSig !== signature) {
       console.error("❌ Signature mismatch");
+      console.error(`Expected: ${expectedSig}`);
+      console.error(`Received: ${signature}`);
       return res.status(403).send("forbidden");
     }
 
@@ -295,21 +304,31 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
     console.log("📥 Webhook payload:", JSON.stringify(decoded, null, 2));
     
     const status = decoded.status || "";
-    // otherAttr istifadə etmədiyimiz üçün order_id-dən məlumatları çıxarırıq
     const orderId = decoded.order_id || "";
     let jobId = "";
     let days = 0;
 
+    // Parse orderId: format is "urgent_{jobId}_{timestamp}"
     if (orderId.startsWith("urgent_")) {
       const parts = orderId.split("_");
+      console.log(`🔍 OrderID parts: ${JSON.stringify(parts)}`);
+      
       if (parts.length >= 3) {
         jobId = parts[1]; // urgent_JOBID_TIMESTAMP
+        console.log(`🔍 Extracted jobId: ${jobId}`);
+        
         // Gün sayını məbləğdən tapırıq
         const amount = Number(decoded.amount) || 0.5;
         if (amount === 0.5) days = 1;
         else if (amount === 2.2) days = 5;
         else if (amount === 4) days = 10;
+        
+        console.log(`🔍 Amount: ${amount}, Days: ${days}`);
+      } else {
+        console.error(`❌ OrderID format invalid: ${orderId}`);
       }
+    } else {
+      console.error(`❌ OrderID doesn't start with 'urgent_': ${orderId}`);
     }
     
     console.log(`📊 Parsed: jobId=${jobId}, status=${status}, days=${days}, amount=${decoded.amount}`);
@@ -317,18 +336,30 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
     if (status === "success" && jobId && [1, 5, 10].includes(days)) {
       console.log(`✅ Updating Firestore for jobId=${jobId}...`);
       const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-      await db.collection("jobs").doc(jobId).update({
-        isUrgent: true,
-        urgentUntil: until,
-        urgentTransaction: decoded.transaction || "",
-      }).catch(err => console.error("❌ Firestore update error:", err));
-      console.log(`✅ Job ${jobId} marked as urgent`);
+      
+      try {
+        await db.collection("jobs").doc(jobId).update({
+          isUrgent: true,
+          urgentUntil: until,
+          urgentTransaction: decoded.transaction || "",
+        });
+        console.log(`✅ Job ${jobId} marked as urgent until ${until}`);
+      } catch (err) {
+        console.error("❌ Firestore update error:", err);
+        console.error("❌ Error details:", err.message);
+        console.error("❌ JobId attempted:", jobId);
+      }
     } else {
-      console.log(`⚠️ Conditions not met: status=${status}, jobId=${jobId}, days=${days}`);
+      console.log(`⚠️ Conditions not met for Firestore update:`);
+      console.log(`   - status: ${status} (expected: success)`);
+      console.log(`   - jobId: ${jobId} (must be non-empty)`);
+      console.log(`   - days: ${days} (must be 1, 5, or 10)`);
     }
+    
     res.status(200).send("ok");
   } catch (e) {
     console.error("❌ Webhook error:", e);
+    console.error("❌ Error stack:", e.stack);
     res.status(500).send("error");
   }
 });
