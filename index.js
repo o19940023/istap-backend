@@ -265,6 +265,10 @@ app.post('/api/createUrgentPayment', async (req, res) => {
   }
 });
 
+app.get('/api/urgentPaymentCallback', (req, res) => {
+  res.send("Epoint Webhook Endpoint is Active (Use POST for callbacks)");
+});
+
 app.post('/api/urgentPaymentCallback', async (req, res) => {
   console.log("====== EPOINT WEBHOOK RECEIVED ======");
   try {
