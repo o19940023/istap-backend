@@ -1,41 +1,21 @@
 require('dotenv').config();
 const admin = require('firebase-admin');
 const fs = require('fs');
-const express = require('express');
-const cors = require('cors');
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// --- SERVER STARTUP ---
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Express server port ${PORT}-da çalışır.`);
-});
-
-// --- FIREBASE INITIALIZATION ---
+// Service Account: env variable (Render.com) OR local file
 let serviceAccount;
-try {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    console.log("Firebase credentials env variable-dan oxundu.");
-  } else if (fs.existsSync('./serviceAccountKey.json')) {
-    serviceAccount = require('./serviceAccountKey.json');
-    console.log("Firebase credentials local fayldan oxundu.");
-  } else {
-    throw new Error("FIREBASE_SERVICE_ACCOUNT env variable və ya serviceAccountKey.json tapılmadı!");
-  }
-
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-  console.log("Firebase Admin uğurla başladıldı.");
-} catch (e) {
-  console.error("❌ FIREBASE STARTUP ERROR:", e.message);
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} else if (fs.existsSync('./serviceAccountKey.json')) {
+  serviceAccount = require('./serviceAccountKey.json');
+} else {
+  console.error("XƏTA: FIREBASE_SERVICE_ACCOUNT env variable və ya serviceAccountKey.json tapılmadı!");
   process.exit(1);
 }
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 
 const db = admin.firestore();
 const fcm = admin.messaging();
@@ -190,7 +170,15 @@ db.collection('applications')
 
 
 // ===== EXPRESS SERVER FOR EPOINT PAYMENT API =====
+const express = require('express');
+const cors = require('cors');
 const crypto = require('crypto');
+
+const app = express();
+app.use(cors());
+// Parse JSON and URL-encoded bodies
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req, res) => {
   res.send(`IsTap Backend OK - ${messageListeners.size} chats dinlənilir`);
@@ -210,176 +198,106 @@ function toBase64Json(obj) {
 }
 
 app.post('/api/createUrgentPayment', async (req, res) => {
-  console.log("====== CREATE URGENT PAYMENT REQUEST ======");
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
-      console.error("❌ Epoint keys missing in env");
       return res.status(500).json({ error: "Epoint keys missing in env" });
     }
 
     const { jobId, employerId, days } = req.body;
-    console.log(`📥 Request params: jobId=${jobId}, employerId=${employerId}, days=${days}`);
-    
     const d = Number(days);
     if (!jobId || !employerId || !d || ![1, 5, 10].includes(d)) {
-      console.error("❌ Invalid params");
       return res.status(400).json({ error: "invalid_params" });
     }
 
-    // Test fiyatları
-    const amount = d === 1 ? 0.5 : d === 5 ? 2.2 : 4;
+    const amount = d === 1 ? 1 : d === 5 ? 3 : 5;
     const orderId = `urgent_${jobId}_${Date.now()}`;
-    console.log(`💰 Amount: ${amount} AZN, OrderID: ${orderId}`);
-    
-    // Epoint API "other_attr" sahəsini bəzən düzgün qəbul etmir və ya JSON gözləyir
-    // Ona görə də onu ləğv edirik, onsuz da orderId-nin içində jobId var.
+    const otherAttr = [
+      { key: "jobId", value: jobId },
+      { key: "employerId", value: employerId },
+      { key: "days", value: String(d) }
+    ];
+
     const dataPayload = {
       public_key: EPOINT_PUBLIC_KEY,
       amount,
       currency: "AZN",
       language: "az",
       order_id: orderId,
-      description: `Tecili elan ${d} gun`,
+      description: `Təcili elan ${d} gün`,
       success_redirect_url: "https://istapapp.netlify.app/support.html",
       error_redirect_url: "https://istapapp.netlify.app/support.html",
+      other_attr: otherAttr,
     };
-    
-    console.log("📤 Sending to Epoint:", JSON.stringify(dataPayload, null, 2));
-    
     const dataBase64 = toBase64Json(dataPayload);
     const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
-    
-    console.log(`🔐 Signature: ${signature.substring(0, 20)}...`);
 
     const body = new URLSearchParams({ data: dataBase64, signature }).toString();
-    console.log("🌐 Calling Epoint API: https://epoint.az/api/1/request");
-    
     const resp = await fetch("https://epoint.az/api/1/request", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
     });
-    
-    console.log(`📡 Epoint response status: ${resp.status}`);
-    
     const json = await resp.json().catch(() => ({}));
-    console.log("📥 Epoint response:", JSON.stringify(json, null, 2));
-    
     if (!json || !json.redirect_url) {
-      console.error("❌ No redirect_url in Epoint response");
       return res.status(502).json({ error: "epoint_error", response: json });
     }
-    
-    console.log(`✅ Payment created successfully. Transaction: ${json.transaction}`);
-    
-    res.json({
-      redirect_url: json.redirect_url,
-      transaction: json.transaction,
-      order_id: orderId,
-      status: json.status || "success"
-    });
+    res.json({ redirect_url: json.redirect_url, transaction: json.transaction, status: json.status || "success" });
   } catch (e) {
-    console.error("❌ Create payment error:", e);
     res.status(500).json({ error: String(e) });
   }
 });
 
-app.get('/api/urgentPaymentCallback', (req, res) => {
-  res.send("Epoint Webhook Endpoint is Active (Use POST for callbacks)");
-});
-
 app.post('/api/urgentPaymentCallback', async (req, res) => {
-  console.log("====== EPOINT WEBHOOK RECEIVED ======");
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
-      console.error("Epoint keys missing in env");
       return res.status(500).send("Epoint keys missing");
     }
     
-    // Express req.body adətən URL-encoded form data olanda obyekt qaytarır
     const dataBase64 = req.body.data || req.query.data || "";
     const signature = req.body.signature || req.query.signature || "";
-    
     if (!dataBase64 || !signature) {
-      console.error("Webhook data missing. Body:", req.body, "Query:", req.query);
       return res.status(400).send("invalid");
     }
 
     const expectedSig = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
     if (expectedSig !== signature) {
-      console.error(`Signature mismatch. Expected: ${expectedSig}, Got: ${signature}`);
       return res.status(403).send("forbidden");
     }
 
-    const decodedStr = Buffer.from(dataBase64, "base64").toString("utf8");
-    console.log("Decoded Epoint payload:", decodedStr);
-    
-    const decoded = JSON.parse(decodedStr);
+    const decoded = JSON.parse(Buffer.from(dataBase64, "base64").toString("utf8"));
     const status = decoded.status || "";
-    // otherAttr istifadə etmədiyimiz üçün order_id-dən məlumatları çıxarırıq
-    const orderId = decoded.order_id || "";
-    let jobId = "";
-    let days = 0;
-
-    if (orderId.startsWith("urgent_")) {
-      const parts = orderId.split("_");
-      if (parts.length >= 3) {
-        jobId = parts[1]; // urgent_JOBID_TIMESTAMP
-        // Gün sayını məbləğdən tapırıq
-        const amount = Number(decoded.amount) || 0.5;
-        if (amount === 0.5) days = 1;
-        else if (amount === 2.2) days = 5;
-        else if (amount === 4) days = 10;
-      }
+    const otherAttr = decoded.other_attr || [];
+    const kv = {};
+    if (Array.isArray(otherAttr)) {
+      otherAttr.forEach((x) => {
+        if (x && x.key) kv[x.key] = x.value;
+      });
     }
-
-    console.log(`Parsed info -> jobId: ${jobId}, status: ${status}, days: ${days}, amount: ${decoded.amount}`);
+    const jobId = kv.jobId;
+    const days = Number(kv.days || 0);
 
     if (status === "success" && jobId && [1, 5, 10].includes(days)) {
-      console.log(`Updating Firestore for jobId: ${jobId}...`);
-      
-      // Önce kontrol et: Zaten güncellenmiş mi? (Idempotency)
-      const jobDoc = await db.collection("jobs").doc(jobId).get();
-      if (jobDoc.exists) {
-        const jobData = jobDoc.data();
-        if (jobData.isUrgent === true && jobData.urgentTransaction) {
-          console.log(`✅ Job ${jobId} already marked as urgent, skipping update (idempotency)`);
-          return res.status(200).send("ok");
-        }
-      }
-      
-      // Henüz güncellenmemişse, şimdi güncelle
       const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-      
-      // Update the document
       await db.collection("jobs").doc(jobId).update({
         isUrgent: true,
         urgentUntil: until,
         urgentTransaction: decoded.transaction || "",
-      });
-      
-      console.log(`✅ Job ${jobId} made urgent successfully.`);
-    } else {
-      console.log(`⚠️ Webhook conditions not met: status=${status}, jobId=${jobId}, days=${days}`);
+      }).catch(err => console.error("Firestore update error:", err));
     }
     res.status(200).send("ok");
   } catch (e) {
-    console.error("❌ Callback error:", e);
+    console.error("Callback error:", e);
     res.status(500).send("error");
   }
 });
 
 app.post('/api/checkPaymentStatus', async (req, res) => {
-  console.log("====== CHECK PAYMENT STATUS REQUEST ======");
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
-      console.error("Epoint keys missing");
       return res.status(500).json({ error: "Epoint keys missing" });
     }
 
     const { orderId, transaction } = req.body;
-    console.log(`Checking status for OrderID: ${orderId}, Transaction: ${transaction}`);
-
     if (!orderId && !transaction) {
       return res.status(400).json({ error: "missing_params" });
     }
@@ -399,55 +317,13 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
     });
 
     const json = await resp.json().catch(() => ({}));
-    console.log("Epoint Status Response:", JSON.stringify(json));
-
-    // Əgər status "success"dirsə, dərhal elanı yeniləyirik (Webhook-u gözləmədən)
-    if (json.status === "success") {
-      let jobId = "";
-      let days = 0;
-      
-      // Order ID-dən jobId-ni çıxarırıq
-      const oid = json.order_id || orderId || "";
-      if (oid.startsWith("urgent_")) {
-        const parts = oid.split("_");
-        if (parts.length >= 3) {
-          jobId = parts[1];
-          const amount = Number(json.amount) || 0.5;
-          if (amount === 0.5) days = 1;
-          else if (amount === 2.2) days = 5;
-          else if (amount === 4) days = 10;
-        }
-      }
-
-      if (jobId && [1, 5, 10].includes(days)) {
-        console.log(`Force updating Firestore for jobId: ${jobId}...`);
-        
-        // Önce kontrol et: Zaten güncellenmiş mi? (Idempotency)
-        const jobDoc = await db.collection("jobs").doc(jobId).get();
-        if (jobDoc.exists) {
-          const jobData = jobDoc.data();
-          if (jobData.isUrgent === true && jobData.urgentTransaction) {
-            console.log(`✅ Job ${jobId} already marked as urgent, skipping update (idempotency)`);
-            return res.json(json);
-          }
-        }
-        
-        // Henüz güncellenmemişse, şimdi güncelle
-        const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-        await db.collection("jobs").doc(jobId).update({
-          isUrgent: true,
-          urgentUntil: until,
-          urgentTransaction: json.transaction || transaction || "",
-        });
-        console.log(`✅ Job ${jobId} force updated successfully.`);
-      }
-    }
-
     res.json(json);
   } catch (e) {
-    console.error("Check status error:", e);
     res.status(500).json({ error: String(e) });
   }
 });
 
-
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Express server port ${PORT}-da çalışır.`);
+});
