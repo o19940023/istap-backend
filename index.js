@@ -209,24 +209,20 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       return res.status(400).json({ error: "invalid_params" });
     }
 
-    const amount = d === 1 ? 1 : d === 5 ? 3 : 5;
+    // Test fiyatları
+    const amount = d === 1 ? 0.5 : d === 5 ? 2.2 : 4;
     const orderId = `urgent_${jobId}_${Date.now()}`;
-    const otherAttr = [
-      { key: "jobId", value: jobId },
-      { key: "employerId", value: employerId },
-      { key: "days", value: String(d) }
-    ];
-
+    // Epoint API "other_attr" sahəsini bəzən düzgün qəbul etmir və ya JSON gözləyir
+    // Ona görə də onu ləğv edirik, onsuz da orderId-nin içində jobId var.
     const dataPayload = {
       public_key: EPOINT_PUBLIC_KEY,
       amount,
       currency: "AZN",
       language: "az",
       order_id: orderId,
-      description: `Təcili elan ${d} gün`,
-      success_redirect_url: "https://istapapp.netlify.app/support.html",
-      error_redirect_url: "https://istapapp.netlify.app/support.html",
-      other_attr: otherAttr,
+      description: `Tecili elan ${d} gun`,
+      success_redirect_url: "https://istapapp.netlify.app/payment-success.html",
+      error_redirect_url: "https://istapapp.netlify.app/payment-error.html",
     };
     const dataBase64 = toBase64Json(dataPayload);
     const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
@@ -266,15 +262,22 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
 
     const decoded = JSON.parse(Buffer.from(dataBase64, "base64").toString("utf8"));
     const status = decoded.status || "";
-    const otherAttr = decoded.other_attr || [];
-    const kv = {};
-    if (Array.isArray(otherAttr)) {
-      otherAttr.forEach((x) => {
-        if (x && x.key) kv[x.key] = x.value;
-      });
+    // otherAttr istifadə etmədiyimiz üçün order_id-dən məlumatları çıxarırıq
+    const orderId = decoded.order_id || "";
+    let jobId = "";
+    let days = 0;
+
+    if (orderId.startsWith("urgent_")) {
+      const parts = orderId.split("_");
+      if (parts.length >= 3) {
+        jobId = parts[1]; // urgent_JOBID_TIMESTAMP
+        // Gün sayını məbləğdən tapırıq
+        const amount = Number(decoded.amount) || 0.5;
+        if (amount === 0.5) days = 1;
+        else if (amount === 2.2) days = 5;
+        else if (amount === 4) days = 10;
+      }
     }
-    const jobId = kv.jobId;
-    const days = Number(kv.days || 0);
 
     if (status === "success" && jobId && [1, 5, 10].includes(days)) {
       const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
