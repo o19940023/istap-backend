@@ -210,20 +210,27 @@ function toBase64Json(obj) {
 }
 
 app.post('/api/createUrgentPayment', async (req, res) => {
+  console.log("====== CREATE URGENT PAYMENT REQUEST ======");
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
+      console.error("❌ Epoint keys missing in env");
       return res.status(500).json({ error: "Epoint keys missing in env" });
     }
 
     const { jobId, employerId, days } = req.body;
+    console.log(`📥 Request params: jobId=${jobId}, employerId=${employerId}, days=${days}`);
+    
     const d = Number(days);
     if (!jobId || !employerId || !d || ![1, 5, 10].includes(d)) {
+      console.error("❌ Invalid params");
       return res.status(400).json({ error: "invalid_params" });
     }
 
-    // Test fiyatları - 0.50 AZN
-    const amount = d === 1 ? 0.5 : d === 5 ? 2 : 3;
+    // Test fiyatları
+    const amount = d === 1 ? 0.5 : d === 5 ? 2.2 : 4;
     const orderId = `urgent_${jobId}_${Date.now()}`;
+    console.log(`💰 Amount: ${amount} AZN, OrderID: ${orderId}`);
+    
     // Epoint API "other_attr" sahəsini bəzən düzgün qəbul etmir və ya JSON gözləyir
     // Ona görə də onu ləğv edirik, onsuz da orderId-nin içində jobId var.
     const dataPayload = {
@@ -236,19 +243,35 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       success_redirect_url: "https://istapapp.netlify.app/payment-success.html",
       error_redirect_url: "https://istapapp.netlify.app/payment-error.html",
     };
+    
+    console.log("📤 Sending to Epoint:", JSON.stringify(dataPayload, null, 2));
+    
     const dataBase64 = toBase64Json(dataPayload);
     const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
+    
+    console.log(`🔐 Signature: ${signature.substring(0, 20)}...`);
 
     const body = new URLSearchParams({ data: dataBase64, signature }).toString();
+    console.log("🌐 Calling Epoint API: https://epoint.az/api/1/request");
+    
     const resp = await fetch("https://epoint.az/api/1/request", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
     });
+    
+    console.log(`📡 Epoint response status: ${resp.status}`);
+    
     const json = await resp.json().catch(() => ({}));
+    console.log("📥 Epoint response:", JSON.stringify(json, null, 2));
+    
     if (!json || !json.redirect_url) {
+      console.error("❌ No redirect_url in Epoint response");
       return res.status(502).json({ error: "epoint_error", response: json });
     }
+    
+    console.log(`✅ Payment created successfully. Transaction: ${json.transaction}`);
+    
     res.json({
       redirect_url: json.redirect_url,
       transaction: json.transaction,
@@ -256,6 +279,7 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       status: json.status || "success"
     });
   } catch (e) {
+    console.error("❌ Create payment error:", e);
     res.status(500).json({ error: String(e) });
   }
 });
@@ -304,8 +328,8 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
         // Gün sayını məbləğdən tapırıq
         const amount = Number(decoded.amount) || 0.5;
         if (amount === 0.5) days = 1;
-        else if (amount === 2) days = 5;
-        else if (amount === 3) days = 10;
+        else if (amount === 2.2) days = 5;
+        else if (amount === 4) days = 10;
       }
     }
 
@@ -390,8 +414,8 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
           jobId = parts[1];
           const amount = Number(json.amount) || 0.5;
           if (amount === 0.5) days = 1;
-          else if (amount === 2) days = 5;
-          else if (amount === 3) days = 10;
+          else if (amount === 2.2) days = 5;
+          else if (amount === 4) days = 10;
         }
       }
 
