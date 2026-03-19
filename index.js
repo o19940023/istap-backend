@@ -221,8 +221,8 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       return res.status(400).json({ error: "invalid_params" });
     }
 
-    // Gerçek fiyatlar
-    const amount = d === 1 ? 1 : d === 5 ? 4 : 7;
+    // Gerçek fiyatlar - Epoint minimum 5 AZN
+    const amount = d === 1 ? 5 : d === 5 ? 10 : 15;
     const orderId = `urgent_${jobId}_${Date.now()}`;
     // Epoint API "other_attr" sahəsini bəzən düzgün qəbul etmir və ya JSON gözləyir
     // Ona görə də onu ləğv edirik, onsuz da orderId-nin içində jobId var.
@@ -302,10 +302,10 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
       if (parts.length >= 3) {
         jobId = parts[1]; // urgent_JOBID_TIMESTAMP
         // Gün sayını məbləğdən tapırıq
-        const amount = Number(decoded.amount) || 1;
-        if (amount === 1) days = 1;
-        else if (amount === 4) days = 5;
-        else if (amount === 7) days = 10;
+        const amount = Number(decoded.amount) || 5;
+        if (amount === 5) days = 1;
+        else if (amount === 10) days = 5;
+        else if (amount === 15) days = 10;
       }
     }
 
@@ -388,10 +388,10 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
         const parts = oid.split("_");
         if (parts.length >= 3) {
           jobId = parts[1];
-          const amount = Number(json.amount) || 1;
-          if (amount === 1) days = 1;
-          else if (amount === 4) days = 5;
-          else if (amount === 7) days = 10;
+          const amount = Number(json.amount) || 5;
+          if (amount === 5) days = 1;
+          else if (amount === 10) days = 5;
+          else if (amount === 15) days = 10;
         }
       }
 
