@@ -284,10 +284,14 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
   console.log("📥 Full request body:", JSON.stringify(req.body, null, 2));
   console.log("📥 Full request query:", JSON.stringify(req.query, null, 2));
   
+  // ✅ DƏRHAL 200 cavab ver — Epoint timeout etməsin
+  res.status(200).send("ok");
+  
+  // Sonra async işlə
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
       console.error("❌ Epoint keys missing");
-      return res.status(500).send("Epoint keys missing");
+      return;
     }
     
     const dataBase64 = req.body.data || req.query.data || "";
@@ -295,7 +299,7 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
     
     if (!dataBase64 || !signature) {
       console.error("❌ Missing data or signature");
-      return res.status(400).send("invalid");
+      return;
     }
 
     const expectedSig = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
@@ -303,7 +307,7 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
       console.error("❌ Signature mismatch");
       console.error(`Expected: ${expectedSig}`);
       console.error(`Received: ${signature}`);
-      return res.status(403).send("forbidden");
+      return;
     }
 
     const decoded = JSON.parse(Buffer.from(dataBase64, "base64").toString("utf8"));
@@ -311,62 +315,50 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
     
     const status = decoded.status || "";
     const orderId = decoded.order_id || "";
-    let jobId = "";
-    let days = 0;
+    
+    if (status !== "success" || !orderId.startsWith("urgent_")) {
+      console.log(`⚠️ Skipping: status=${status}, orderId=${orderId}`);
+      return;
+    }
 
     // Parse orderId: format is "urgent_{jobId}_{timestamp}"
-    if (orderId.startsWith("urgent_")) {
-      const parts = orderId.split("_");
-      console.log(`🔍 OrderID parts: ${JSON.stringify(parts)}`);
-      
-      if (parts.length >= 3) {
-        jobId = parts[1]; // urgent_JOBID_TIMESTAMP
-        console.log(`🔍 Extracted jobId: ${jobId}`);
-        
-        // Gün sayını məbləğdən tapırıq
-        const amount = Number(decoded.amount) || 0.5;
-        if (amount === 0.5) days = 1;
-        else if (amount === 2.2) days = 5;
-        else if (amount === 4) days = 10;
-        
-        console.log(`🔍 Amount: ${amount}, Days: ${days}`);
-      } else {
-        console.error(`❌ OrderID format invalid: ${orderId}`);
-      }
-    } else {
-      console.error(`❌ OrderID doesn't start with 'urgent_': ${orderId}`);
+    const parts = orderId.split("_");
+    console.log(`🔍 OrderID parts: ${JSON.stringify(parts)}`);
+    
+    if (parts.length < 3) {
+      console.error(`❌ OrderID format invalid: ${orderId}`);
+      return;
     }
     
-    console.log(`📊 Parsed: jobId=${jobId}, status=${status}, days=${days}, amount=${decoded.amount}`);
-
-    if (status === "success" && jobId && [1, 5, 10].includes(days)) {
-      console.log(`✅ Updating Firestore for jobId=${jobId}...`);
-      const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-      
-      try {
-        await db.collection("jobs").doc(jobId).update({
-          isUrgent: true,
-          urgentUntil: until,
-          urgentTransaction: decoded.transaction || "",
-        });
-        console.log(`✅ Job ${jobId} marked as urgent until ${until}`);
-      } catch (err) {
-        console.error("❌ Firestore update error:", err);
-        console.error("❌ Error details:", err.message);
-        console.error("❌ JobId attempted:", jobId);
-      }
-    } else {
-      console.log(`⚠️ Conditions not met for Firestore update:`);
-      console.log(`   - status: ${status} (expected: success)`);
-      console.log(`   - jobId: ${jobId} (must be non-empty)`);
-      console.log(`   - days: ${days} (must be 1, 5, or 10)`);
+    const jobId = parts[1]; // urgent_JOBID_TIMESTAMP
+    console.log(`🔍 Extracted jobId: ${jobId}`);
+    
+    // Gün sayını məbləğdən tapırıq
+    const amount = Number(decoded.amount) || 0.5;
+    let days = 0;
+    if (amount === 0.5) days = 1;
+    else if (amount === 2.2) days = 5;
+    else if (amount === 4) days = 10;
+    
+    console.log(`🔍 Amount: ${amount}, Days: ${days}`);
+    
+    if (!jobId || !days) {
+      console.error(`❌ Invalid jobId or days: jobId=${jobId}, days=${days}`);
+      return;
     }
     
-    res.status(200).send("ok");
+    console.log(`✅ Updating Firestore for jobId=${jobId}...`);
+    const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    
+    await db.collection("jobs").doc(jobId).update({
+      isUrgent: true,
+      urgentUntil: until,
+      urgentTransaction: decoded.transaction || "",
+    });
+    console.log(`✅ Job ${jobId} marked as urgent until ${until}`);
   } catch (e) {
-    console.error("❌ Webhook error:", e);
+    console.error("❌ Webhook processing error:", e);
     console.error("❌ Error stack:", e.stack);
-    res.status(500).send("error");
   }
 });
 
@@ -413,20 +405,52 @@ app.post('/api/manualConfirm', async (req, res) => {
     }
 
     // Əgər frontend pay-successful redirect-dən sonra çağırıbsa,
-    // Epoint status-u gözləmədən birbaşa yenilə
+    // Epoint-dən yoxla — 3 cəhd (təhlükəsizlik üçün)
     if (successRedirect === true) {
-      console.log(`✅ Success redirect confirmed, updating Firestore directly`);
-      const d = Number(days);
-      const until = new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString();
+      console.log(`🔍 Success redirect confirmed, verifying with Epoint...`);
       
-      await db.collection("jobs").doc(jobId).update({
-        isUrgent: true,
-        urgentUntil: until,
-        urgentTransaction: transaction,
-      });
+      for (let i = 0; i < 3; i++) {
+        const dataPayload = { 
+          public_key: EPOINT_PUBLIC_KEY,
+          transaction 
+        };
+        const dataBase64 = toBase64Json(dataPayload);
+        const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
+        const body = new URLSearchParams({ data: dataBase64, signature }).toString();
+        
+        const resp = await fetch("https://epoint.az/api/1/get-status", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+        });
+
+        const statusData = await resp.json().catch(() => ({}));
+        console.log(`🔍 Epoint status attempt ${i+1}/3: ${statusData.status}`);
+        
+        if (statusData.status === 'success') {
+          console.log(`✅ Payment verified, updating Firestore for jobId=${jobId}`);
+          const d = Number(days);
+          const until = new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString();
+          
+          await db.collection("jobs").doc(jobId).update({
+            isUrgent: true,
+            urgentUntil: until,
+            urgentTransaction: transaction,
+          });
+          
+          console.log(`✅ Job ${jobId} marked as urgent until ${until}`);
+          return res.json({ ok: true, status: 'success' });
+        }
+        
+        // 2 saniyə gözlə, Epoint async yeniləyir
+        if (i < 2) {
+          console.log(`⏳ Waiting 2 seconds before retry...`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
       
-      console.log(`✅ Job ${jobId} marked as urgent until ${until}`);
-      return res.json({ ok: true, status: 'success' });
+      console.log(`⚠️ Payment not confirmed after 3 attempts`);
+      return res.json({ ok: false, status: 'not_confirmed' });
     }
 
     // Əks halda Epoint-dən yoxla (köhnə davranış)
