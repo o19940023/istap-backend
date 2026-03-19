@@ -198,20 +198,27 @@ function toBase64Json(obj) {
 }
 
 app.post('/api/createUrgentPayment', async (req, res) => {
+  console.log("====== CREATE URGENT PAYMENT REQUEST ======");
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
+      console.error("❌ Epoint keys missing");
       return res.status(500).json({ error: "Epoint keys missing in env" });
     }
 
     const { jobId, employerId, days } = req.body;
+    console.log(`📥 Request: jobId=${jobId}, employerId=${employerId}, days=${days}`);
+    
     const d = Number(days);
     if (!jobId || !employerId || !d || ![1, 5, 10].includes(d)) {
+      console.error("❌ Invalid params");
       return res.status(400).json({ error: "invalid_params" });
     }
 
     // Test fiyatları
     const amount = d === 1 ? 0.5 : d === 5 ? 2.2 : 4;
     const orderId = `urgent_${jobId}_${Date.now()}`;
+    console.log(`💰 Amount: ${amount} AZN, OrderID: ${orderId}`);
+    
     // Epoint API "other_attr" sahəsini bəzən düzgün qəbul etmir və ya JSON gözləyir
     // Ona görə də onu ləğv edirik, onsuz da orderId-nin içində jobId var.
     const dataPayload = {
@@ -224,43 +231,65 @@ app.post('/api/createUrgentPayment', async (req, res) => {
       success_redirect_url: "https://istapapp.netlify.app/payment-success.html",
       error_redirect_url: "https://istapapp.netlify.app/payment-error.html",
     };
+    
+    console.log("📤 Epoint payload:", JSON.stringify(dataPayload, null, 2));
+    
     const dataBase64 = toBase64Json(dataPayload);
     const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
+    console.log(`🔐 Signature: ${signature.substring(0, 20)}...`);
 
     const body = new URLSearchParams({ data: dataBase64, signature }).toString();
+    console.log("🌐 Calling Epoint API...");
+    
     const resp = await fetch("https://epoint.az/api/1/request", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
     });
+    
+    console.log(`📡 Epoint response status: ${resp.status}`);
+    
     const json = await resp.json().catch(() => ({}));
+    console.log("📥 Epoint response:", JSON.stringify(json, null, 2));
+    
     if (!json || !json.redirect_url) {
+      console.error("❌ No redirect_url in response");
       return res.status(502).json({ error: "epoint_error", response: json });
     }
+    
+    console.log(`✅ Payment created: Transaction=${json.transaction}`);
     res.json({ redirect_url: json.redirect_url, transaction: json.transaction, status: json.status || "success" });
   } catch (e) {
+    console.error("❌ Error:", e);
     res.status(500).json({ error: String(e) });
   }
 });
 
 app.post('/api/urgentPaymentCallback', async (req, res) => {
+  console.log("====== EPOINT WEBHOOK RECEIVED ======");
   try {
     if (!EPOINT_PUBLIC_KEY || !EPOINT_PRIVATE_KEY) {
+      console.error("❌ Epoint keys missing");
       return res.status(500).send("Epoint keys missing");
     }
     
     const dataBase64 = req.body.data || req.query.data || "";
     const signature = req.body.signature || req.query.signature || "";
+    
     if (!dataBase64 || !signature) {
+      console.error("❌ Missing data or signature");
       return res.status(400).send("invalid");
     }
 
     const expectedSig = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
     if (expectedSig !== signature) {
+      console.error("❌ Signature mismatch");
       return res.status(403).send("forbidden");
     }
 
     const decoded = JSON.parse(Buffer.from(dataBase64, "base64").toString("utf8"));
+    console.log("📥 Webhook payload:", JSON.stringify(decoded, null, 2));
+    
     const status = decoded.status || "";
     // otherAttr istifadə etmədiyimiz üçün order_id-dən məlumatları çıxarırıq
     const orderId = decoded.order_id || "";
@@ -278,18 +307,24 @@ app.post('/api/urgentPaymentCallback', async (req, res) => {
         else if (amount === 4) days = 10;
       }
     }
+    
+    console.log(`📊 Parsed: jobId=${jobId}, status=${status}, days=${days}, amount=${decoded.amount}`);
 
     if (status === "success" && jobId && [1, 5, 10].includes(days)) {
+      console.log(`✅ Updating Firestore for jobId=${jobId}...`);
       const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
       await db.collection("jobs").doc(jobId).update({
         isUrgent: true,
         urgentUntil: until,
         urgentTransaction: decoded.transaction || "",
-      }).catch(err => console.error("Firestore update error:", err));
+      }).catch(err => console.error("❌ Firestore update error:", err));
+      console.log(`✅ Job ${jobId} marked as urgent`);
+    } else {
+      console.log(`⚠️ Conditions not met: status=${status}, jobId=${jobId}, days=${days}`);
     }
     res.status(200).send("ok");
   } catch (e) {
-    console.error("Callback error:", e);
+    console.error("❌ Webhook error:", e);
     res.status(500).send("error");
   }
 });
