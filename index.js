@@ -405,14 +405,31 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
 app.post('/api/manualConfirm', async (req, res) => {
   console.log("====== MANUAL CONFIRM REQUEST ======");
   try {
-    const { transaction, jobId, days } = req.body;
-    console.log(`📥 Manual confirm: transaction=${transaction}, jobId=${jobId}, days=${days}`);
+    const { transaction, jobId, days, successRedirect } = req.body;
+    console.log(`📥 Manual confirm: transaction=${transaction}, jobId=${jobId}, days=${days}, successRedirect=${successRedirect}`);
     
     if (!transaction || !jobId || !days) {
       return res.status(400).json({ error: "missing_params" });
     }
 
-    // Epoint-dən status yoxla
+    // Əgər frontend pay-successful redirect-dən sonra çağırıbsa,
+    // Epoint status-u gözləmədən birbaşa yenilə
+    if (successRedirect === true) {
+      console.log(`✅ Success redirect confirmed, updating Firestore directly`);
+      const d = Number(days);
+      const until = new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString();
+      
+      await db.collection("jobs").doc(jobId).update({
+        isUrgent: true,
+        urgentUntil: until,
+        urgentTransaction: transaction,
+      });
+      
+      console.log(`✅ Job ${jobId} marked as urgent until ${until}`);
+      return res.json({ ok: true, status: 'success' });
+    }
+
+    // Əks halda Epoint-dən yoxla (köhnə davranış)
     const dataPayload = { 
       public_key: EPOINT_PUBLIC_KEY,
       transaction 
@@ -432,7 +449,8 @@ app.post('/api/manualConfirm', async (req, res) => {
     
     if (statusData.status === 'success') {
       console.log(`✅ Payment confirmed, updating Firestore for jobId=${jobId}`);
-      const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      const d = Number(days);
+      const until = new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString();
       
       await db.collection("jobs").doc(jobId).update({
         isUrgent: true,
