@@ -268,7 +268,12 @@ app.post('/api/createUrgentPayment', async (req, res) => {
     }
     
     console.log(`✅ Payment created: Transaction=${json.transaction}`);
-    res.json({ redirect_url: json.redirect_url, transaction: json.transaction, status: json.status || "success" });
+    res.json({
+      redirect_url: json.redirect_url,
+      transaction: json.transaction,
+      order_id: orderId,
+      status: json.status || "success",
+    });
   } catch (e) {
     console.error("❌ Error:", e);
     res.status(500).json({ error: String(e) });
@@ -397,8 +402,9 @@ app.post('/api/checkPaymentStatus', async (req, res) => {
 app.post('/api/manualConfirm', async (req, res) => {
   console.log("====== MANUAL CONFIRM REQUEST ======");
   try {
-    const { transaction, jobId, days, successRedirect } = req.body;
-    console.log(`📥 Manual confirm: transaction=${transaction}, jobId=${jobId}, days=${days}, successRedirect=${successRedirect}`);
+    const { transaction, orderId, order_id, jobId, days, successRedirect } = req.body;
+    const normalizedOrderId = orderId || order_id || "";
+    console.log(`📥 Manual confirm: transaction=${transaction}, orderId=${normalizedOrderId}, jobId=${jobId}, days=${days}, successRedirect=${successRedirect}`);
     
     if (!transaction || !jobId || !days) {
       return res.status(400).json({ error: "missing_params" });
@@ -409,11 +415,15 @@ app.post('/api/manualConfirm', async (req, res) => {
     if (successRedirect === true) {
       console.log(`🔍 Success redirect confirmed, verifying with Epoint...`);
       
-      for (let i = 0; i < 3; i++) {
-        const dataPayload = { 
+      const maxAttempts = 12; // 12 * 2.5s = 30s window
+      const delayMs = 2500;
+
+      for (let i = 0; i < maxAttempts; i++) {
+        const dataPayload = {
           public_key: EPOINT_PUBLIC_KEY,
-          transaction 
+          transaction,
         };
+        if (normalizedOrderId) dataPayload.order_id = normalizedOrderId;
         const dataBase64 = toBase64Json(dataPayload);
         const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
         const body = new URLSearchParams({ data: dataBase64, signature }).toString();
@@ -425,9 +435,18 @@ app.post('/api/manualConfirm', async (req, res) => {
         });
 
         const statusData = await resp.json().catch(() => ({}));
-        console.log(`🔍 Epoint status attempt ${i+1}/3: ${statusData.status}`);
+        const status = String(statusData.status || "").toLowerCase();
+        console.log(`🔍 Epoint status attempt ${i + 1}/${maxAttempts}: ${status || "unknown"}`);
         
-        if (statusData.status === 'success') {
+        const isSuccess = ["success", "confirmed", "paid", "completed", "approved"].includes(status);
+        const isFailed = ["failed", "autoreversed", "reversed", "cancelled", "canceled"].includes(status);
+
+        if (isFailed) {
+          console.log(`⚠️ Payment failed/autoreversed in Epoint: status=${status}`);
+          return res.json({ ok: false, status: status || "failed" });
+        }
+
+        if (isSuccess) {
           console.log(`✅ Payment verified, updating Firestore for jobId=${jobId}`);
           const d = Number(days);
           const until = new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString();
@@ -442,22 +461,23 @@ app.post('/api/manualConfirm', async (req, res) => {
           return res.json({ ok: true, status: 'success' });
         }
         
-        // 2 saniyə gözlə, Epoint async yeniləyir
-        if (i < 2) {
-          console.log(`⏳ Waiting 2 seconds before retry...`);
-          await new Promise(r => setTimeout(r, 2000));
+        // Epoint async yeniləyir
+        if (i < maxAttempts - 1) {
+          console.log(`⏳ Waiting ${delayMs}ms before retry...`);
+          await new Promise(r => setTimeout(r, delayMs));
         }
       }
       
-      console.log(`⚠️ Payment not confirmed after 3 attempts`);
+      console.log(`⚠️ Payment not confirmed after ${maxAttempts} attempts`);
       return res.json({ ok: false, status: 'not_confirmed' });
     }
 
     // Əks halda Epoint-dən yoxla (köhnə davranış)
     const dataPayload = { 
       public_key: EPOINT_PUBLIC_KEY,
-      transaction 
+      transaction,
     };
+    if (normalizedOrderId) dataPayload.order_id = normalizedOrderId;
     const dataBase64 = toBase64Json(dataPayload);
     const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
     const body = new URLSearchParams({ data: dataBase64, signature }).toString();
@@ -471,7 +491,9 @@ app.post('/api/manualConfirm', async (req, res) => {
     const statusData = await resp.json().catch(() => ({}));
     console.log(`📥 Epoint status response:`, JSON.stringify(statusData, null, 2));
     
-    if (statusData.status === 'success') {
+    const status = String(statusData.status || "").toLowerCase();
+    const isSuccess = ["success", "confirmed", "paid", "completed", "approved"].includes(status);
+    if (isSuccess) {
       console.log(`✅ Payment confirmed, updating Firestore for jobId=${jobId}`);
       const d = Number(days);
       const until = new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString();
@@ -486,7 +508,7 @@ app.post('/api/manualConfirm', async (req, res) => {
       res.json({ ok: true, status: 'success' });
     } else {
       console.log(`⚠️ Payment not successful, status: ${statusData.status}`);
-      res.json({ ok: false, status: statusData.status });
+      res.json({ ok: false, status: statusData.status || status || "not_confirmed" });
     }
   } catch (e) {
     console.error("❌ Manual confirm error:", e);
