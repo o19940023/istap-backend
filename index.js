@@ -419,11 +419,14 @@ app.post('/api/manualConfirm', async (req, res) => {
       const delayMs = 2500;
 
       for (let i = 0; i < maxAttempts; i++) {
-        const dataPayload = {
-          public_key: EPOINT_PUBLIC_KEY,
-          transaction,
-        };
-        if (normalizedOrderId) dataPayload.order_id = normalizedOrderId;
+        // Use order_id preferentially.
+        // Some Epoint setups return stale/incorrect data when querying by transaction alone.
+        const dataPayload = { public_key: EPOINT_PUBLIC_KEY };
+        if (normalizedOrderId) {
+          dataPayload.order_id = normalizedOrderId;
+        } else {
+          dataPayload.transaction = transaction;
+        }
         const dataBase64 = toBase64Json(dataPayload);
         const signature = buildEpointSignature(EPOINT_PRIVATE_KEY, dataBase64);
         const body = new URLSearchParams({ data: dataBase64, signature }).toString();
